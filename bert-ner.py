@@ -299,7 +299,6 @@ def filed_based_convert_examples_to_features(
         features["input_mask"] = create_int_feature(feature.input_mask)
         features["segment_ids"] = create_int_feature(feature.segment_ids)
         features["label_ids"] = create_int_feature(feature.label_ids)
-        # features["label_mask"] = create_int_feature(feature.label_mask)
         tf_example = tf.train.Example(features=tf.train.Features(feature=features))
         writer.write(tf_example.SerializeToString())
 
@@ -309,9 +308,7 @@ def file_based_input_fn_builder(input_file, seq_length, is_training, drop_remain
         "input_ids": tf.FixedLenFeature([seq_length], tf.int64),
         "input_mask": tf.FixedLenFeature([seq_length], tf.int64),
         "segment_ids": tf.FixedLenFeature([seq_length], tf.int64),
-        "label_ids": tf.FixedLenFeature([seq_length], tf.int64),
-        # "label_ids":tf.VarLenFeature(tf.int64),
-        # "label_mask": tf.FixedLenFeature([seq_length], tf.int64),
+        "label_ids": tf.FixedLenFeature([seq_length], tf.int64)
     }
 
     def _decode_record(record, name_to_features):
@@ -349,7 +346,7 @@ def create_model(bert_config, is_training, input_ids, input_mask,
         token_type_ids=segment_ids,
         use_one_hot_embeddings=use_one_hot_embeddings
     )
-
+    # output_layer : [batch_size, seq_length, hidden_size]
     output_layer = model.get_sequence_output()
 
     hidden_size = output_layer.shape[-1].value
@@ -367,10 +364,9 @@ def create_model(bert_config, is_training, input_ids, input_mask,
         output_layer = tf.reshape(output_layer, [-1, hidden_size])
         logits = tf.matmul(output_layer, output_weight, transpose_b=True)
         logits = tf.nn.bias_add(logits, output_bias)
-        logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, 13])
-        # mask = tf.cast(input_mask,tf.float32)
-        # loss = tf.contrib.seq2seq.sequence_loss(logits,labels,mask)
-        # return (loss, logits, predict)
+        #logits : [batch_size*seq_length, num_labels]
+        logits = tf.reshape(logits, [-1, FLAGS.max_seq_length, num_labels])
+
         ##########################################################################
         log_probs = tf.nn.log_softmax(logits, axis=-1)
         one_hot_labels = tf.one_hot(labels, depth=num_labels, dtype=tf.float32)
@@ -435,9 +431,9 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
             def metric_fn(per_example_loss, label_ids, logits):
                 # def metric_fn(label_ids, logits):
                 predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
-                precision = tf_metrics.precision(label_ids, predictions, 13, [1, 2, 4, 5, 6, 7, 8, 9], average="macro")
-                recall = tf_metrics.recall(label_ids, predictions, 13, [1, 2, 4, 5, 6, 7, 8, 9], average="macro")
-                f = tf_metrics.f1(label_ids, predictions, 13, [1, 2, 4, 5, 6, 7, 8, 9], average="macro")
+                precision = tf_metrics.precision(label_ids, predictions, num_labels, [1, 2, 4, 5, 6, 7, 8, 9], average="macro")
+                recall = tf_metrics.recall(label_ids, predictions, num_labels, [1, 2, 4, 5, 6, 7, 8, 9], average="macro")
+                f = tf_metrics.f1(label_ids, predictions, num_labels, [1, 2, 4, 5, 6, 7, 8, 9], average="macro")
                 #
                 return {
                     "eval_precision": precision,
