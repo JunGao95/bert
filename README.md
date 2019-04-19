@@ -1,3 +1,12 @@
+# BERT-NER
+
+### 数据预处理
+
+- 在取得标注数据后，先使用Excel转换为txt文件，然后用notepad++将文件编码转换为UTF-8；
+
+
+
+
 # BERT
 
 **\*\*\*\*\* New February 7th, 2019: TfHub Module \*\*\*\*\***
