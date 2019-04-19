@@ -2,8 +2,9 @@
 # -*- coding:utf-8 -*-
 """
 Copyright 2018 The Google AI Language Team Authors.
-BASED ON Google_BERT.
-@Author:zhoukaiyin
+BASED ON Google_BERT and zhoukaiyin's model(https://github.com/kyzhouhzau/BERT-NER).
+@Author:JunGAO
+@20190419
 """
 from __future__ import absolute_import
 from __future__ import division
