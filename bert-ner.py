@@ -16,33 +16,33 @@ import modeling
 import optimization
 import tokenization
 import tensorflow as tf
-from sklearn.metrics import f1_score, precision_score, recall_score
-from tensorflow.python.ops import math_ops
 import tf_metrics
 import pickle
+import random
+import numpy as np
 
-
-DATA_DIR = 'Prodata/test.txt'
+MODE = 'classify'
+DATA_DIR = 'Prodata/Renew_ner20190516.txt'
 BERT_CONFIG_FILE = 'checkpoint/bert_config.json'
-OUTPUT_DIR = 'output/'
+OUTPUT_DIR = 'output_0516/'+MODE+'/'
 INIT_CHECKPOINT = 'checkpoint/bert_model.ckpt'
 VOCAB_FILE = 'checkpoint/vocab.txt'
+
 
 DO_TRAIN = True
 DO_EVAL = True
 DO_PREDICT = True
 
 DO_LOWER_CASE = True
-MAX_SEQ_LENGTH = 32
-TRAIN_BATCH_SIZE = 16
-EVAL_BATCH_SIZE = 16
-PREDICT_BATCH_SIZE = 16
+MAX_SEQ_LENGTH = 512
+TRAIN_BATCH_SIZE = 2
+EVAL_BATCH_SIZE = 4
+PREDICT_BATCH_SIZE = 4
 LEARNING_RATE = 5e-5
-NUM_TRAIN_EPOCHS = 20.0
+NUM_TRAIN_EPOCHS = 20
 WARMUP_PROPORTION = 0.1
 SAVE_CHECKPOINTS_STEPS = 1000
 ITERATIONS_PER_LOOP = 1000
-POSITIVE_INDEX = [1, 2, 3, 4, 5, 6, 8, 9, 10, 11]
 
 USE_TPU = False
 MASTER = None
@@ -78,27 +78,41 @@ class InputFeatures(object):
         self.label_ids = label_ids
         # self.label_mask = label_mask
 
-def read_txt_to_examples(input_file):
 
+def read_txt_to_examples(input_file, mode=MODE):
+    # mode = 'tag' : 标签识别模式
+    # mode = 'classify' : 需求分类模式
     with open(input_file, 'r', encoding='utf-8') as f:
         examples = []
         lines = f.readlines()
-        for line in lines:
-            if line.startswith('id:'):
-                id = int(line[3:8])
-                texts = []
-                labels = []
-                continue
-            if line.startswith('\t\n'):
-                example = InputExample(id, texts, labels)
-                examples.append(example)
-                continue
-            line_list = line.split('\t')
-            texts.append(line_list[0])
-            if line_list[1] == '\n':
-                labels.append('O')
-            else:
-                labels.append(line_list[1].replace('E', "I").strip())
+        for i, line in enumerate(lines):
+                if line.startswith('id:'):
+                    id = int(line[3:8])
+                    texts = []
+                    tag_labels = []
+                    classify_labels = []
+                    if id == 10071:
+                        break
+                    continue
+                if line.startswith('\t\t\n'):
+                    if mode == 'tag':
+                        example = InputExample(id, texts, tag_labels)
+                        examples.append(example)
+                    elif mode == 'classify':
+                        example = InputExample(id, texts, classify_labels)
+                        examples.append(example)
+                    continue
+                line_list = line.split('\t')
+                texts.append(line_list[0])
+                if line_list[1] == '':
+                    classify_labels.append('O')
+                else:
+                    classify_labels.append(line_list[1])
+
+                if line_list[2] == '\n':
+                    tag_labels.append('O')
+                else:
+                    tag_labels.append(line_list[2].strip())
 
         return examples
 
@@ -288,7 +302,14 @@ def create_model(bert_config, is_training, input_ids, input_mask,
 
 def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
                      num_train_steps, num_warmup_steps, use_tpu,
-                     use_one_hot_embeddings):
+                     use_one_hot_embeddings, train_mode=MODE):
+
+    def get_positive_index(train_mode=MODE):
+        if train_mode == 'tag':
+            return [2,3]
+        elif train_mode == 'classify':
+            return [i for i in range(2, 12)]
+
     def model_fn(features, labels, mode, params):
         tf.logging.info("*** Features ***")
         for name in sorted(features.keys()):
@@ -339,9 +360,9 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
             def metric_fn(per_example_loss, label_ids, logits):
                 # def metric_fn(label_ids, logits):
                 predictions = tf.argmax(logits, axis=-1, output_type=tf.int32)
-                precision = tf_metrics.precision(label_ids, predictions, num_labels, POSITIVE_INDEX, average="macro")
-                recall = tf_metrics.recall(label_ids, predictions, num_labels, POSITIVE_INDEX, average="macro")
-                f = tf_metrics.f1(label_ids, predictions, num_labels, POSITIVE_INDEX, average="macro")
+                precision = tf_metrics.precision(label_ids, predictions, num_labels, get_positive_index(MODE), average="macro")
+                recall = tf_metrics.recall(label_ids, predictions, num_labels, get_positive_index(MODE), average="macro")
+                f = tf_metrics.f1(label_ids, predictions, num_labels, get_positive_index(MODE), average="macro")
                 #
                 return {
                     "eval_precision": precision,
@@ -365,14 +386,24 @@ def model_fn_builder(bert_config, num_labels, init_checkpoint, learning_rate,
 
     return model_fn
 
+def get_label_list(examples):
 
-def main(_):
+    uniq_label_list = []
+    for example in examples:
+        for l in example.label:
+            if l not in uniq_label_list:
+                uniq_label_list.append(l)
+
+    uniq_label_list.extend(['X', '[CLS]', '[SEP]'])
+
+    return uniq_label_list
+
+
+# Main Part
+def train_eval():
     tf.logging.set_verbosity(tf.logging.INFO)
 
     bert_config = modeling.BertConfig.from_json_file(BERT_CONFIG_FILE)
-
-    label_list = ["B-TI", "I-TI",  "B-FO", "I-FO", "B-S", "I-S",  "O",
-                "B-T", "I-T", "B-O", "I-O", "B-F", "I-F", "X", "[CLS]", "[SEP]"]
 
     tokenizer = tokenization.FullTokenizer(
         vocab_file=VOCAB_FILE, do_lower_case=DO_LOWER_CASE)
@@ -398,13 +429,13 @@ def main(_):
     num_warmup_steps = None
 
     examples = read_txt_to_examples(DATA_DIR)
+    label_list = get_label_list(examples)
 
-    if DO_TRAIN:
-
-        train_examples = examples[0: int(0.8*len(examples))]
-        num_train_steps = int(
-            len(train_examples) / TRAIN_BATCH_SIZE * NUM_TRAIN_EPOCHS)
-        num_warmup_steps = int(num_train_steps * WARMUP_PROPORTION)
+    train_examples = random.sample(examples, int(0.9*len(examples)))
+    eval_examples = list(set(examples) - set(train_examples))
+    num_train_steps = int(
+        len(train_examples) / TRAIN_BATCH_SIZE * NUM_TRAIN_EPOCHS)
+    num_warmup_steps = int(num_train_steps * WARMUP_PROPORTION)
 
     model_fn = model_fn_builder(
         bert_config=bert_config,
@@ -424,46 +455,47 @@ def main(_):
         eval_batch_size=EVAL_BATCH_SIZE,
         predict_batch_size=PREDICT_BATCH_SIZE)
 
-    if DO_TRAIN:
-        train_file = os.path.join(OUTPUT_DIR, "train.tf_record")
-        filed_based_convert_examples_to_features(
-            train_examples, label_list, MAX_SEQ_LENGTH, tokenizer, train_file)
-        tf.logging.info("***** Running training *****")
-        tf.logging.info("  Num examples = %d", len(train_examples))
-        tf.logging.info("  Batch size = %d", TRAIN_BATCH_SIZE)
-        tf.logging.info("  Num steps = %d", num_train_steps)
-        train_input_fn = file_based_input_fn_builder(
-            input_file=train_file,
-            seq_length=MAX_SEQ_LENGTH,
-            is_training=True,
-            drop_remainder=True)
-        estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
-    if DO_EVAL:
-        eval_examples = examples[int(0.8*len(examples))+1 : ]
-        eval_file = os.path.join(OUTPUT_DIR, "eval.tf_record")
-        filed_based_convert_examples_to_features(
-            eval_examples, label_list, MAX_SEQ_LENGTH, tokenizer, eval_file)
 
-        tf.logging.info("***** Running evaluation *****")
-        tf.logging.info("  Num examples = %d", len(eval_examples))
-        tf.logging.info("  Batch size = %d", EVAL_BATCH_SIZE)
-        eval_steps = None
-        if USE_TPU:
-            eval_steps = int(len(eval_examples) / EVAL_BATCH_SIZE)
-        eval_drop_remainder = True if USE_TPU else False
-        eval_input_fn = file_based_input_fn_builder(
-            input_file=eval_file,
-            seq_length=MAX_SEQ_LENGTH,
-            is_training=False,
-            drop_remainder=eval_drop_remainder)
-        result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
-        output_eval_file = os.path.join(OUTPUT_DIR, "eval_results.txt")
-        with open(output_eval_file, "w") as writer:
-            tf.logging.info("***** Eval results *****")
-            for key in sorted(result.keys()):
-                tf.logging.info("  %s = %s", key, str(result[key]))
-                writer.write("%s = %s\n" % (key, str(result[key])))
+    train_file = os.path.join(OUTPUT_DIR, "train0516.tf_record")
+    filed_based_convert_examples_to_features(
+        train_examples, label_list, MAX_SEQ_LENGTH, tokenizer, train_file)
+    tf.logging.info("***** Running training *****")
+    tf.logging.info("  Num examples = %d", len(train_examples))
+    tf.logging.info("  Batch size = %d", TRAIN_BATCH_SIZE)
+    tf.logging.info("  Num steps = %d", num_train_steps)
+    train_input_fn = file_based_input_fn_builder(
+        input_file=train_file,
+        seq_length=MAX_SEQ_LENGTH,
+        is_training=True,
+        drop_remainder=True)
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
 
+
+
+    eval_file = os.path.join(OUTPUT_DIR, "eval0516.tf_record")
+    filed_based_convert_examples_to_features(
+        eval_examples, label_list, MAX_SEQ_LENGTH, tokenizer, eval_file)
+
+    tf.logging.info("***** Running evaluation *****")
+    tf.logging.info("  Num examples = %d", len(eval_examples))
+    tf.logging.info("  Batch size = %d", EVAL_BATCH_SIZE)
+    eval_steps = None
+    if USE_TPU:
+        eval_steps = int(len(eval_examples) / EVAL_BATCH_SIZE)
+    eval_drop_remainder = True if USE_TPU else False
+    eval_input_fn = file_based_input_fn_builder(
+        input_file=eval_file,
+        seq_length=MAX_SEQ_LENGTH,
+        is_training=False,
+        drop_remainder=eval_drop_remainder)
+    result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
+    output_eval_file = os.path.join(OUTPUT_DIR, "eval_results.txt")
+    with open(output_eval_file, "w") as writer:
+        tf.logging.info("***** Eval results *****")
+        for key in sorted(result.keys()):
+            tf.logging.info("  %s = %s", key, str(result[key]))
+            writer.write("%s = %s\n" % (key, str(result[key])))
+'''
     if DO_PREDICT:
         token_path = os.path.join(OUTPUT_DIR, "token_test.txt")
         with open('./output/label2id.pkl', 'rb') as rf:
@@ -498,12 +530,4 @@ def main(_):
             for prediction in result:
                 output_line = "\n".join(id2label[id] for id in prediction if id != 0) + "\n"
                 writer.write(output_line)
-
-
-if __name__ == "__main__":
-    flags.mark_flag_as_required("data_dir")
-    flags.mark_flag_as_required("task_name")
-    flags.mark_flag_as_required("vocab_file")
-    flags.mark_flag_as_required("bert_config_file")
-    flags.mark_flag_as_required("output_dir")
-    tf.app.run()
+'''
