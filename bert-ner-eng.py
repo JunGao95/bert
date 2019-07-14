@@ -20,18 +20,20 @@ import tf_metrics
 import pickle
 import random
 import numpy as np
+import pandas as pd
 
 # MODE : train_tag, train_classify, predict_tag, predict_classify
-MODE = 'train_classify'
-ROOT_DIR = 'output_0525/'
+MODE = 'train_tag'
+ROOT_DIR = 'output_0714_eng/'
 OUTPUT_DIR = ROOT_DIR + MODE.split('_')[1] + '/'
 MODEL_DIR = ROOT_DIR + MODE.split('_')[1] + '/'
-LABELED_ID = 100071
+# LABELED_ID = 10150
 
-DATA_DIR = 'Prodata/Renew_ner20190516.txt'
-BERT_CONFIG_FILE = 'checkpoint/bert_config.json'
-INIT_CHECKPOINT = 'checkpoint/bert_model.ckpt'
-VOCAB_FILE = 'checkpoint/vocab.txt'
+DATA_DIR = 'Prodata/Final/ipadusa_tag.txt'
+PREDICT_DIR = 'Prodata/Final/Dataset_ipad_content.xlsx'
+BERT_CONFIG_FILE = 'checkpoint_english/bert_config.json'
+INIT_CHECKPOINT = 'checkpoint_english/bert_model.ckpt'
+VOCAB_FILE = 'checkpoint_english/vocab.txt'
 
 DO_LOWER_CASE = True
 MAX_SEQ_LENGTH = 512
@@ -39,7 +41,7 @@ TRAIN_BATCH_SIZE = 4
 EVAL_BATCH_SIZE = 4
 PREDICT_BATCH_SIZE = 4
 LEARNING_RATE = 5e-5
-NUM_TRAIN_EPOCHS = 10
+#NUM_TRAIN_EPOCHS = 10
 WARMUP_PROPORTION = 0.1
 SAVE_CHECKPOINTS_STEPS = 1000
 ITERATIONS_PER_LOOP = 1000
@@ -78,7 +80,7 @@ class InputFeatures(object):
         self.label_ids = label_ids
         # self.label_mask = label_mask
 
-
+'''
 def read_txt_to_examples(input_file, mode=MODE):
     # mode = 'tag' : 标签识别模式
     # mode = 'classify' : 需求分类模式
@@ -86,26 +88,30 @@ def read_txt_to_examples(input_file, mode=MODE):
     with open(input_file, 'r', encoding='utf-8') as f:
         examples = []
         lines = f.readlines()
+
         for i, line in enumerate(lines):
+
                 if line.startswith('id:'):
                     sentence_id = int(line[3:8])
                     texts = []
                     tag_labels = []
                     classify_labels = []
+                    if sentence_id > LABELED_ID:
+                        break
                     continue
+
                 if line.startswith('\t\t\n'):
                     if (mode == 'train_tag') and (sentence_id < LABELED_ID):
-                        example = InputExample(sentence_id, texts, tag_labels)
-                        examples.append(example)
-                    elif (mode == 'train_classify') and (sentence_id < LABELED_ID):
                         example = InputExample(sentence_id, texts, classify_labels)
                         examples.append(example)
-                    elif (mode.startswith('predict')) and (sentence_id >= LABELED_ID):
-                        example = InputExample(sentence_id, texts, ['O'] * len(texts))
+                    elif (mode == 'train_classify') and (sentence_id < LABELED_ID):
+                        example = InputExample(sentence_id, texts, tag_labels)
                         examples.append(example)
                     continue
+
                 line_list = line.split('\t')
                 texts.append(line_list[0])
+
                 if line_list[1] == '':
                     classify_labels.append('O')
                 else:
@@ -116,6 +122,7 @@ def read_txt_to_examples(input_file, mode=MODE):
                 else:
                     tag_labels.append(line_list[2].strip())
 
+    # 去重
     text_list = []
     duplicated_examples = []
     for example in examples:
@@ -124,11 +131,61 @@ def read_txt_to_examples(input_file, mode=MODE):
         for old_text in text_list:
             if text == old_text:
                 flag = False
-        if flag == True:
+        if flag == True and '"' not in text:
             duplicated_examples.append(example)
             text_list.append(''.join(example.text))
 
+    for i in duplicated_examples:
+        assert len(i.text) == len(i.label)
     return duplicated_examples
+'''
+
+def read_txt_to_examples(input_file, mode=MODE):
+
+
+    examples = []
+    with open(input_file, 'r') as f:
+
+        lines = f.readlines()
+        for i, line in enumerate(lines):
+            if line.startswith('id:'):
+                if i != 0:
+                    #texts.append('EOS')
+                    #labels.append('O')
+                    examples.append(InputExample(sentence_id, texts, labels))
+                sentence_id = line[3:].strip()
+                texts = []
+                labels = []
+                continue
+            line_list = line.split('\t')
+            texts.append(line_list[0].strip())
+            if mode.startswith('train'):
+                labels.append(line_list[1].strip())
+            else:
+                labels.append('O')
+
+    return examples
+
+
+
+def create_predict_examples(input_file):
+
+    examples = []
+    id = 10000
+    df = pd.read_excel(input_file)
+    basic_tokenizer = tokenization.BasicTokenizer(do_lower_case=False)
+    str_list = list(df['Content'])
+    for i in range(len(str_list)):
+        str_list[i] = str_list[i].replace('"', '')
+        str_list[i] = str_list[i].replace("'", '')
+
+    for req in str_list:
+        tok_list = basic_tokenizer.tokenize(req)
+        #tok_list.append('EOS')
+        examples.append(InputExample(id, tok_list, ['O']*len(tok_list)))
+        id += 1
+    return examples
+
 
 
 def write_tokens(tokens, mode):
@@ -448,71 +505,72 @@ with open(OUTPUT_DIR+'label_list.pkl', 'wb') as f:
 train_examples = random.sample(examples, int(0.9 * len(examples)))
 eval_examples = list(set(examples) - set(train_examples))
 
-#cv_result = {'num_train_epochs': [], 'eval_f': [], 'eval_precision': [], 'eval_recall': [], 'global_step': [], 'loss': []}
-#for NUM_TRAIN_EPOCHS in np.arange(1, 21):
-num_train_steps = int(
-    len(train_examples) / TRAIN_BATCH_SIZE * NUM_TRAIN_EPOCHS)
-num_warmup_steps = int(num_train_steps * WARMUP_PROPORTION)
+cv_result = {'num_train_epochs': [], 'eval_f': [], 'eval_precision': [], 'eval_recall': [], 'global_step': [], 'loss': []}
+for NUM_TRAIN_EPOCHS in np.arange(1, 11):
+    num_train_steps = int(
+        len(train_examples) / TRAIN_BATCH_SIZE * NUM_TRAIN_EPOCHS)
+    num_warmup_steps = int(num_train_steps * WARMUP_PROPORTION)
 
-model_fn = model_fn_builder(
-    bert_config=bert_config,
-    num_labels=len(label_list) + 1,
-    init_checkpoint=INIT_CHECKPOINT,
-    learning_rate=LEARNING_RATE,
-    num_train_steps=num_train_steps,
-    num_warmup_steps=num_warmup_steps,
-    use_tpu=USE_TPU,
-    use_one_hot_embeddings=USE_TPU)
+    model_fn = model_fn_builder(
+        bert_config=bert_config,
+        num_labels=len(label_list) + 1,
+        init_checkpoint=INIT_CHECKPOINT,
+        learning_rate=LEARNING_RATE,
+        num_train_steps=num_train_steps,
+        num_warmup_steps=num_warmup_steps,
+        use_tpu=USE_TPU,
+        use_one_hot_embeddings=USE_TPU)
 
-estimator = tf.contrib.tpu.TPUEstimator(
-    use_tpu=USE_TPU,
-    model_fn=model_fn,
-    config=run_config,
-    train_batch_size=TRAIN_BATCH_SIZE,
-    eval_batch_size=EVAL_BATCH_SIZE,
-    predict_batch_size=PREDICT_BATCH_SIZE)
+    estimator = tf.contrib.tpu.TPUEstimator(
+        use_tpu=USE_TPU,
+        model_fn=model_fn,
+        config=run_config,
+        train_batch_size=TRAIN_BATCH_SIZE,
+        eval_batch_size=EVAL_BATCH_SIZE,
+        predict_batch_size=PREDICT_BATCH_SIZE)
 
-train_file = os.path.join(OUTPUT_DIR, "train.tf_record")
+    train_file = os.path.join(OUTPUT_DIR, "train.tf_record")
 
-filed_based_convert_examples_to_features(
-    train_examples, label_list, MAX_SEQ_LENGTH, tokenizer, train_file)
-tf.logging.info("***** Running training *****")
-tf.logging.info("  Num examples = %d", len(train_examples))
-tf.logging.info("  Batch size = %d", TRAIN_BATCH_SIZE)
-tf.logging.info("  Num steps = %d", num_train_steps)
-train_input_fn = file_based_input_fn_builder(
-    input_file=train_file,
-    seq_length=MAX_SEQ_LENGTH,
-    is_training=True,
-    drop_remainder=True)
-estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
+    filed_based_convert_examples_to_features(
+        train_examples, label_list, MAX_SEQ_LENGTH, tokenizer, train_file)
+    tf.logging.info("***** Running training *****")
+    tf.logging.info("  Num examples = %d", len(train_examples))
+    tf.logging.info("  Batch size = %d", TRAIN_BATCH_SIZE)
+    tf.logging.info("  Num steps = %d", num_train_steps)
+    train_input_fn = file_based_input_fn_builder(
+        input_file=train_file,
+        seq_length=MAX_SEQ_LENGTH,
+        is_training=True,
+        drop_remainder=True)
+    estimator.train(input_fn=train_input_fn, max_steps=num_train_steps)
 
-eval_file = os.path.join(OUTPUT_DIR, "eval.tf_record")
+    eval_file = os.path.join(OUTPUT_DIR, "eval.tf_record")
 
-filed_based_convert_examples_to_features(
-    eval_examples, label_list, MAX_SEQ_LENGTH, tokenizer, eval_file)
+    filed_based_convert_examples_to_features(
+        eval_examples, label_list, MAX_SEQ_LENGTH, tokenizer, eval_file)
 
-tf.logging.info("***** Running evaluation *****")
-tf.logging.info("  Num examples = %d", len(eval_examples))
-tf.logging.info("  Batch size = %d", EVAL_BATCH_SIZE)
-eval_steps = None
-if USE_TPU:
-    eval_steps = int(len(eval_examples) / EVAL_BATCH_SIZE)
-eval_drop_remainder = True if USE_TPU else False
-eval_input_fn = file_based_input_fn_builder(
-    input_file=eval_file,
-    seq_length=MAX_SEQ_LENGTH,
-    is_training=False,
-    drop_remainder=eval_drop_remainder)
-result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
-output_eval_file = os.path.join(OUTPUT_DIR, "eval_results.txt")
-with open(output_eval_file, "w") as writer:
-    tf.logging.info("***** Eval results *****")
-    #cv_result['num_train_epochs'].append(NUM_TRAIN_EPOCHS)
-    for key in sorted(result.keys()):
-        tf.logging.info("  %s = %s", key, str(result[key]))
-        writer.write("%s = %s\n" % (key, str(result[key])))
-        #cv_result[key].append(result[key])
+    tf.logging.info("***** Running evaluation *****")
+    tf.logging.info("  Num examples = %d", len(eval_examples))
+    tf.logging.info("  Batch size = %d", EVAL_BATCH_SIZE)
+    eval_steps = None
+    if USE_TPU:
+        eval_steps = int(len(eval_examples) / EVAL_BATCH_SIZE)
+    eval_drop_remainder = True if USE_TPU else False
+    eval_input_fn = file_based_input_fn_builder(
+        input_file=eval_file,
+        seq_length=MAX_SEQ_LENGTH,
+        is_training=False,
+        drop_remainder=eval_drop_remainder)
+    result = estimator.evaluate(input_fn=eval_input_fn, steps=eval_steps)
+    output_eval_file = os.path.join(OUTPUT_DIR, "eval_results.txt")
+    with open(output_eval_file, "w") as writer:
+        tf.logging.info("***** Eval results *****")
+        cv_result['num_train_epochs'].append(NUM_TRAIN_EPOCHS)
+        for key in sorted(result.keys()):
+            tf.logging.info("  %s = %s", key, str(result[key]))
+            writer.write("%s = %s\n" % (key, str(result[key])))
+            cv_result[key].append(result[key])
+pd.DataFrame(cv_result).to_csv('results.csv')
 
 #### predict ####
 with open(OUTPUT_DIR+'label_list.pkl', 'rb') as f:
@@ -572,7 +630,7 @@ with open('./output/label2id.pkl', 'rb') as rf:
     id2label = {value: key for key, value in label2id.items()}
 if os.path.exists(token_path):
     os.remove(token_path)
-predict_examples = read_txt_to_examples(DATA_DIR, MODE)
+predict_examples = create_predict_examples(PREDICT_DIR)
 
 predict_file = os.path.join(OUTPUT_DIR, "predict.tf_record")
 filed_based_convert_examples_to_features(predict_examples, label_list,
@@ -600,31 +658,53 @@ with open(output_predict_file, 'w') as writer:
         output_line = "\n".join(id2label[id] for id in prediction if id != 0) + "\n"
         writer.write(output_line)
 
-#
-tag_examples = read_txt_to_examples(DATA_DIR, 'tag')
-classify_examples = read_txt_to_examples(DATA_DIR, 'classify')
 
-final_results = []
-for i, example in enumerate(tag_examples):
-    sentence = ''.join(example.text)
-    tags = []
-    tag_flag = False
-    for j, tag in enumerate(example.label):
-        if tag == 'B-TG':
-            if tag_flag:
-                tags.append(new_tag)
-            new_tag = example.text[j]
-            tag_flag = True
-        elif tag == 'I-TG':
-            new_tag += example.text[j]
-        elif tag == 'O':
-            if tag_flag:
-                tags.append(new_tag)
-                tag_flag = False
-    final_results.append([sentence[8:], list(set(tags))])
 
-    with open(file_path, 'w', encoding='utf-8') as f:
-        for result in final_results:
-            sentence_id = 10000
-            f.write(str(sentence_id) + '\t' + result[0] + '\t' + ','.join(result[1]) + '\n')
-            sentence_id += 1
+f1 = open('output_0610_eng\\classify\\token_test.txt', 'r')
+f2 = open('output_0610_eng\\classify\\label_test.txt', 'r')
+f3 = open('output_0610_eng\\classify\\ipadusa_tag_predict.txt', 'w')
+lines_1 = f1.readlines()
+lines_2 = f2.readlines()
+
+# 为校验长度，构建[id, 文本list, 标签List]
+sen_id = 10000
+text_results = []
+for i in range(len(lines_1)):
+    if lines_1[i].startswith('[CLS]'):
+        text_results.append([sen_id, []])
+        continue
+    elif lines_1[i].startswith('##'):
+        text_results[-1][1][-1] += lines_1[i].strip()[2:]
+    elif lines_1[i].startswith('[SEP]'):
+        sen_id += 1
+        continue
+    else:
+        text_results[-1][1].append(lines_1[i].strip())
+
+results = []
+for i in range(len(lines_2)):
+    if lines_2[i].startswith('[CLS]'):
+        results.append([sen_id, []])
+        continue
+    elif lines_1[i].startswith('##'):
+        continue
+    elif lines_2[i].startswith('[SEP]'):
+        sen_id += 1
+        continue
+    else:
+        results[-1][1].append(lines_2[i].strip())
+
+error_num = 0
+for i in range(len(results)):
+
+    if len(results[i][1]) == len(text_results[i][1]):
+        f3.write('id:%s\n' % (str(results[i][0])))
+        for j in range(len(results[i][1])):
+            f3.write(text_results[i][1][j] + '\t' + results[i][1][j] + '\n')
+    else:
+        print('%d: %d-%d'%(error_num, len(results[i][1]), len(text_results[i][1])))
+        error_num += 1
+
+f1.close()
+f2.close()
+f3.close()
